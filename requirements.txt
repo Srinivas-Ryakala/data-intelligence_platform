@@ -1,4 +1,6 @@
 pyodbc
 pandas
 python-dotenv
+pytest
 tabulate
+openpyxl

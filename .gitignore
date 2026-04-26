@@ -1,1 +1,12 @@
 .env
+venv/
+__pycache__/
+*.pyc
+logs/
+*.log
+dq_trend_report.xlsx
+extracted_*.txt
+read_docs.ps1
+read_xlsx*.ps1
+debug_xlsx*.ps1
+debug_xlsx_output.txt
