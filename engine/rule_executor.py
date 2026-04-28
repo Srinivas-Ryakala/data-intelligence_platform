@@ -188,17 +188,17 @@ def _execute_single_assignment(run_id: int, assignment: DQRuleAssignment) -> DQR
             )
 
         # ── Resolve table and column names ──
-        table_name = get_table_name(assignment.asset_id)
+        table_name = get_qualified_name(assignment.asset_id) or get_table_name(assignment.asset_id)
         if table_name is None:
             table_name = f"ASSET_{assignment.asset_id}"
 
         column_name = None
         if assignment.column_asset_id is not None:
             column_name = get_table_name(assignment.column_asset_id)
-            # If this is a column-level rule, get the parent table name
+            # If this is a column-level rule, get the parent table name and prefer its qualified name
             parent = get_parent_table_for_column(assignment.column_asset_id)
             if parent:
-                table_name = parent.get("asset_name", table_name)
+                table_name = parent.get("qualified_name") or parent.get("asset_name") or table_name
 
         # ── Build and execute the SQL query ──
         sql = build_sql(assignment, rule, table_name, column_name)

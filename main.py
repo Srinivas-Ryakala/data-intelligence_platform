@@ -51,9 +51,30 @@ def main() -> None:
 
     run_id = None
     assignments = get_active_assignments()
-    platform_id = assignments[0].platform_id if assignments else None
-    # pipeline_id = assignments[1].pipeline_id if assignments else None
-    # parse_run_id = assignments[2].parse_run_id if assignments else None
+
+    if not assignments:
+        logger.error("No active DQ_RULE_ASSIGNMENT rows found. Aborting DQ run.")
+        return
+
+    platform_id = next((a.platform_id for a in assignments if getattr(a, 'platform_id', None) is not None), None)
+    if platform_id is None:
+        env_platform_id = os.getenv("DQ_PLATFORM_ID")
+        if env_platform_id is not None:
+            try:
+                platform_id = int(env_platform_id)
+                logger.info(f"Using DQ_PLATFORM_ID from environment: {platform_id}")
+            except ValueError:
+                logger.warning("DQ_PLATFORM_ID is set but is not a valid integer.")
+
+    if platform_id is None:
+        logger.error(
+            "No platform_id available from active assignments or DQ_PLATFORM_ID. "
+            "Aborting DQ run."
+        )
+        return
+
+    # pipeline_id = next((a.pipeline_id for a in assignments if getattr(a, 'pipeline_id', None) is not None), None)
+    # parse_run_id = next((a.parse_run_id for a in assignments if getattr(a, 'parse_run_id', None) is not None), None)
     try:
         # ──────────────────────────────────────────────
         # Step 1: Create DQ_RUN row

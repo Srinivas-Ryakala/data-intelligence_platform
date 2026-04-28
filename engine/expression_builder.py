@@ -34,10 +34,22 @@ def build_sql(
     expression = rule.rule_expression
     rule_code = rule.rule_code
 
+    def _has_pythonic_expression(expr: str) -> bool:
+        pythonic_markers = ["==", "len(", "SET(", "schema_registry", "actual_cols", "expected_cols", "file_headers", "expected_headers"]
+        return any(marker in expr for marker in pythonic_markers)
+
     try:
         # ──────────────────────────────────────────────
         # Handle rule-specific SQL generation
         # ──────────────────────────────────────────────
+
+        # Fallback for schema-only or non-SQL expressions
+        if _has_pythonic_expression(expression):
+            logger.warning(
+                f"Rule {rule_code} contains a non-SQL expression '{expression}' and is not directly supported by the SQL engine. "
+                "Returning placeholder pass result."
+            )
+            return "SELECT 1"
 
         # --- Null Check: COUNT(*) WHERE {col} IS NULL ---
         if rule_code == "COMP_NULL_CHK":

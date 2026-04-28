@@ -258,3 +258,25 @@ def get_parent_table_for_column(column_asset_id: int) -> Optional[dict]:
     except Exception as e:
         logger.error(f"Failed to get parent table for column {column_asset_id}: {e}")
         return None
+
+
+def asset_exists(asset_id: int) -> bool:
+    """
+    Check if an asset with the given asset_id exists in DATA_ASSET.
+
+    Args:
+        asset_id: The asset_id to check.
+
+    Returns:
+        bool: True if exists, False otherwise.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM DATA_ASSET WHERE asset_id = ?", asset_id)
+        row = cursor.fetchone()
+        conn.close()
+        return row is not None
+    except Exception as e:
+        logger.error(f"Failed to check if asset {asset_id} exists: {e}")
+        return False

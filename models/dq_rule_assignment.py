@@ -13,6 +13,10 @@ class DQRuleAssignment:
     """
     Maps to every column in the DQ_RULE_ASSIGNMENT table.
 
+    This model already supports the current intelligent assignment flow,
+    including data-driven rule assignment through column metadata,
+    qualified SQL asset names, and optional filter conditions.
+
     Attributes:
         dq_rule_assignment_id: Auto-incremented PK. None when creating new.
         dq_rule_id: FK to DQ_RULE.
