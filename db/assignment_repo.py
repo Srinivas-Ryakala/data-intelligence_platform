@@ -98,6 +98,7 @@ def insert_assignment(assignment: DQRuleAssignment) -> Optional[int]:
     Returns:
         int or None: The new dq_rule_assignment_id, or None on error.
     """
+    print("platform id:", assignment.platform_id)
     try:
         now = datetime.now()
         conn = get_connection()
@@ -171,3 +172,32 @@ def deactivate_assignment(dq_rule_assignment_id: int) -> bool:
     except Exception as e:
         logger.error(f"Failed to deactivate assignment {dq_rule_assignment_id}: {e}")
         return False
+
+
+def get_assignment_by_id(dq_rule_assignment_id: int) -> Optional[DQRuleAssignment]:
+    """
+    Fetch a single DQ_RULE_ASSIGNMENT by its primary key.
+
+    Args:
+        dq_rule_assignment_id: The assignment to look up.
+
+    Returns:
+        DQRuleAssignment or None if not found.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM DQ_RULE_ASSIGNMENT WHERE dq_rule_assignment_id = ?",
+            dq_rule_assignment_id
+        )
+        columns = [desc[0] for desc in cursor.description]
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        data = dict(zip(columns, row))
+        return DQRuleAssignment(**{k: v for k, v in data.items() if k in DQRuleAssignment.__dataclass_fields__})
+    except Exception as e:
+        logger.error(f"Failed to fetch assignment {dq_rule_assignment_id}: {e}")
+        return None

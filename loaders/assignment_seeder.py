@@ -51,6 +51,8 @@ def seed_null_check_assignments() -> tuple[int, int]:
         asset_id = col.get("parent_asset_id")
         column_asset_id = col.get("asset_id")
         platform_id = col.get("platform_id")
+        # pipeline_id = col.get("pipeline_id")
+        # parse_run_id = col.get("parse_run_id")
 
         if assignment_exists(rule.dq_rule_id, asset_id, column_asset_id):
             skipped += 1
@@ -61,6 +63,8 @@ def seed_null_check_assignments() -> tuple[int, int]:
             asset_id=asset_id,
             column_asset_id=column_asset_id,
             platform_id=platform_id,
+            # pipeline_id=pipeline_id,
+            # parse_run_id=parse_run_id,
             assignment_scope="COLUMN",
             execution_mode="BLOCKING",
             execution_frequency="EVERY_RUN",

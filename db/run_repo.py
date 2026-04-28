@@ -23,6 +23,7 @@ def create_run(run: DQRun) -> Optional[int]:
     Returns:
         int or None: The new dq_run_id, or None on error.
     """
+    print("platform id:", run.platform_id)
     try:
         now = datetime.now()
         conn = get_connection()

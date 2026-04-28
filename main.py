@@ -22,6 +22,7 @@ from engine.rule_executor import execute_all
 from engine.score_calculator import calculate_scores
 from engine.issue_generator import generate_issues
 from models.dq_run import DQRun
+from db.assignment_repo import get_active_assignments
 
 
 def main() -> None:
@@ -49,12 +50,18 @@ def main() -> None:
     logger.info("=" * 60)
 
     run_id = None
-
+    assignments = get_active_assignments()
+    platform_id = assignments[0].platform_id if assignments else None
+    # pipeline_id = assignments[1].pipeline_id if assignments else None
+    # parse_run_id = assignments[2].parse_run_id if assignments else None
     try:
         # ──────────────────────────────────────────────
         # Step 1: Create DQ_RUN row
         # ──────────────────────────────────────────────
         run = DQRun(
+            platform_id=platform_id,
+            # pipeline_id=pipeline_id,
+            # parse_run_id=parse_run_id,
             run_name=f"DQ Run - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             run_type="MANUAL",
             run_status="RUNNING",
@@ -114,17 +121,18 @@ def main() -> None:
         total_rules_executed = len(results)
 
         # Determine final run_status
-        # FAILED if any Critical-severity rule failed
-        has_critical_failure = False
+        # FAILED only if a BLOCKING assignment failed — severity alone does not fail the run.
+        # NON_BLOCKING and ADVISORY failures are recorded but do not set run_status=FAILED.
+        from db.assignment_repo import get_assignment_by_id
+        has_blocking_failure = False
         for r in results:
-            if r.result_status == "FAILED":
-                from db.rule_repo import get_rule_by_id
-                rule = get_rule_by_id(r.dq_rule_id)
-                if rule and rule.severity == "Critical":
-                    has_critical_failure = True
+            if r.result_status == "FAILED" and r.dq_rule_assignment_id is not None:
+                assignment = get_assignment_by_id(r.dq_rule_assignment_id)
+                if assignment and assignment.execution_mode == "BLOCKING":
+                    has_blocking_failure = True
                     break
 
-        run_status = "FAILED" if has_critical_failure else "SUCCESS"
+        run_status = "FAILED" if has_blocking_failure else "SUCCESS"
 
         run_summary = (
             f"{total_passed} passed, {total_failed} failed, {total_warned} warned "

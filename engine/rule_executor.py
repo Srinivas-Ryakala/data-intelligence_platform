@@ -205,29 +205,44 @@ def _execute_single_assignment(run_id: int, assignment: DQRuleAssignment) -> DQR
         logger.info(f"Executing: {sql}")
 
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(sql)
-        row = cursor.fetchone()
-        observed_value = float(row[0]) if row and row[0] is not None else 0.0
-
-        # ── Get rows_checked for context ──
-        rows_checked = None
         try:
-            count_sql = build_row_count_sql(table_name, assignment.filter_condition)
-            cursor.execute(count_sql)
-            count_row = cursor.fetchone()
-            rows_checked = int(count_row[0]) if count_row and count_row[0] is not None else 0
-        except Exception:
-            pass  # Non-critical — rows_checked is informational
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            row = cursor.fetchone()
+            observed_value = float(row[0]) if row and row[0] is not None else 0.0
 
-        conn.close()
+            # ── Get rows_checked for context ──
+            rows_checked = None
+            try:
+                count_sql = build_row_count_sql(table_name, assignment.filter_condition)
+                cursor.execute(count_sql)
+                count_row = cursor.fetchone()
+                rows_checked = int(count_row[0]) if count_row and count_row[0] is not None else 0
+            except Exception:
+                pass  # Non-critical — rows_checked is informational
+        finally:
+            conn.close()
 
         # ── Evaluate threshold ──
         threshold_value, threshold_operator = _resolve_threshold(assignment, rule)
         result_status = _evaluate_threshold(observed_value, threshold_value, threshold_operator)
 
         # ── Compute row counts ──
-        failed_row_count = int(observed_value) if rule.threshold_operator == "=" and rule.default_threshold_value == 0 else None
+        # For "count of bad rows = 0" style rules, observed_value IS the failed count.
+        # For "pass rate >= threshold" style rules, derive failed count from rows_checked.
+        if rows_checked and rows_checked > 0:
+            if threshold_operator in ("=", "<=", "<") and rule.default_threshold_value == 0:
+                # observed_value is the count of failing rows (e.g. null count)
+                failed_row_count = int(observed_value)
+            elif threshold_operator in (">=", ">") and observed_value <= 1.0:
+                # observed_value is a pass rate (0-1 or 0-100); derive failed count
+                rate = observed_value if observed_value <= 1.0 else observed_value / 100.0
+                failed_row_count = int(rows_checked * (1.0 - rate))
+            else:
+                failed_row_count = None
+        else:
+            failed_row_count = None
+
         passed_row_count = (rows_checked - failed_row_count) if rows_checked and failed_row_count is not None else None
         pass_percentage = (
             (passed_row_count / rows_checked * 100)

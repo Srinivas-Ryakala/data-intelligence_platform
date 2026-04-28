@@ -114,6 +114,121 @@ def rule_exists(rule_code: str) -> bool:
         return False
 
 
+def get_all_rule_codes() -> set[str]:
+    """
+    Fetch all rule_codes from DQ_RULE.
+
+    Returns:
+        set[str]: All rule codes currently present in the database.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT rule_code FROM DQ_RULE")
+        rows = cursor.fetchall()
+        conn.close()
+        return {row[0] for row in rows}
+    except Exception as e:
+        logger.error(f"Failed to fetch rule codes: {e}")
+        return set()
+
+
+def deactivate_rule(rule_code: str) -> bool:
+    """
+    Soft-deactivate a rule by setting is_active to 0.
+
+    Args:
+        rule_code: The rule_code to deactivate.
+
+    Returns:
+        bool: True if the rule was deactivated.
+    """
+    try:
+        now = datetime.now()
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE DQ_RULE
+            SET is_active = 0,
+                updated_at = ?
+            WHERE rule_code = ? AND is_active <> 0
+            """,
+            now,
+            rule_code,
+        )
+        conn.commit()
+        deactivated = cursor.rowcount > 0
+        conn.close()
+        return deactivated
+    except Exception as e:
+        logger.error(f"Failed to deactivate rule '{rule_code}': {e}")
+        return False
+
+
+def update_rule(rule: DQRule) -> bool:
+    """
+    Update an existing rule definition by rule_code.
+
+    Args:
+        rule: The DQRule object with updated values.
+
+    Returns:
+        bool: True if the rule was updated successfully.
+    """
+    try:
+        now = datetime.now()
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE DQ_RULE
+            SET
+                rule_name = ?,
+                rule_type = ?,
+                rule_dimension = ?,
+                rule_level = ?,
+                expression_type = ?,
+                rule_expression = ?,
+                expected_condition = ?,
+                default_threshold_value = ?,
+                threshold_operator = ?,
+                severity = ?,
+                description = ?,
+                rule_source = ?,
+                created_by = ?,
+                is_active = ?,
+                created_at = ?,
+                updated_at = ?
+            WHERE rule_code = ?
+            """,
+            rule.rule_name,
+            rule.rule_type,
+            rule.rule_dimension,
+            rule.rule_level,
+            rule.expression_type,
+            rule.rule_expression,
+            rule.expected_condition,
+            rule.default_threshold_value,
+            rule.threshold_operator,
+            rule.severity,
+            rule.description,
+            rule.rule_source,
+            rule.created_by,
+            rule.is_active,
+            rule.created_at or now,
+            rule.updated_at or now,
+            rule.rule_code,
+        )
+        conn.commit()
+        updated = cursor.rowcount > 0
+        conn.close()
+        return updated
+    except Exception as e:
+        logger.error(f"Failed to update rule '{rule.rule_code}': {e}")
+        return False
+
+
 def insert_rule(rule: DQRule) -> Optional[int]:
     """
     Insert a new rule into DQ_RULE. Checks for duplicate rule_code before inserting.
