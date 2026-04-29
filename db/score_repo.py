@@ -26,6 +26,20 @@ def bulk_insert_scores(scores: list[DQScoreSummary]) -> int:
         logger.info("No score summaries to insert.")
         return 0
 
+    # Filter out any summary rows that cannot be inserted due to NULL asset_id.
+    insertable_scores = [s for s in scores if s.asset_id is not None]
+    skipped_count = len(scores) - len(insertable_scores)
+    if skipped_count > 0:
+        logger.warning(
+            f"Skipping {skipped_count} score summary rows with NULL asset_id. "
+            "DQ_SCORE_SUMMARY.asset_id is NOT NULL in the target schema. "
+            "Pipeline-level summaries are not inserted."
+        )
+
+    if not insertable_scores:
+        logger.info("No insertable score summaries to insert.")
+        return 0
+
     try:
         now = datetime.now()
         conn = get_connection()
@@ -55,12 +69,12 @@ def bulk_insert_scores(scores: list[DQScoreSummary]) -> int:
                 s.created_at or now,
                 s.updated_at or now,
             )
-            for s in scores
+            for s in insertable_scores
         ]
 
         cursor.executemany(insert_sql, params)
         conn.commit()
-        row_count = len(scores)
+        row_count = len(insertable_scores)
         conn.close()
         logger.info(f"Bulk inserted {row_count} DQ_SCORE_SUMMARY rows.")
         return row_count

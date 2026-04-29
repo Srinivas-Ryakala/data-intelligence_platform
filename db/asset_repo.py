@@ -203,29 +203,28 @@ def get_table_name(asset_id: int) -> Optional[str]:
         return None
 
 
-def get_qualified_name(asset_id: int) -> Optional[str]:
+def get_qualified_name(asset_id: int) -> tuple[Optional[str], Optional[str]]:
     """
-    Get the qualified_name for a given asset_id.
-
-    Args:
-        asset_id: The asset_id to look up.
+    Get the qualified_name and asset_type for a given asset_id.
 
     Returns:
-        str or None: The qualified_name, or None if not found.
+        tuple: (qualified_name, asset_type) — both None if not found.
     """
     try:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT qualified_name FROM DATA_ASSET WHERE asset_id = ?",
+            "SELECT qualified_name, asset_type FROM DATA_ASSET WHERE asset_id = ?",
             asset_id
         )
         row = cursor.fetchone()
         conn.close()
-        return row[0] if row else None
+        if not row:
+            return None, None
+        return row[0], row[1]
     except Exception as e:
         logger.error(f"Failed to get qualified name for asset {asset_id}: {e}")
-        return None
+        return None, None
 
 
 def get_parent_table_for_column(column_asset_id: int) -> Optional[dict]:

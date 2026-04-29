@@ -213,6 +213,95 @@ def _has_cross_field_columns(table_asset: Dict[str, Any]) -> bool:
     )
 
 
+_table_columns_cache: Dict[int, list[Dict[str, Any]]] = {}
+
+
+def _get_table_columns(table_asset: Dict[str, Any]) -> list[Dict[str, Any]]:
+    asset_id = table_asset.get("asset_id")
+    if asset_id is None:
+        return []
+    if asset_id not in _table_columns_cache:
+        _table_columns_cache[asset_id] = get_columns_for_table(asset_id)
+    return _table_columns_cache[asset_id]
+
+
+def _is_string_column(column: Dict[str, Any]) -> bool:
+    data_type = column.get("data_type", "").upper()
+    name = column.get("asset_name", "").lower()
+    return data_type in ["VARCHAR", "NVARCHAR", "CHAR", "TEXT", "STRING"] or any(keyword in name for keyword in ["name", "code", "status", "type", "city", "country", "zip", "postal", "email", "phone"])
+
+
+def _is_numeric_column(column: Dict[str, Any]) -> bool:
+    return column.get("data_type", "").upper() in ["INT", "BIGINT", "DECIMAL", "FLOAT", "DOUBLE", "NUMERIC", "SMALLINT", "TINYINT"]
+
+
+def _is_datetime_column(column: Dict[str, Any]) -> bool:
+    return column.get("data_type", "").upper() in ["DATE", "DATETIME", "DATETIME2", "SMALLDATETIME", "TIMESTAMP", "TIME"] or _column_name_matches(column, ["date", "time", "timestamp", "created_at", "updated_at", "event_time", "load_time"])
+
+
+def _column_name_contains(column: Dict[str, Any], terms: list[str]) -> bool:
+    name = column.get("asset_name", "").lower()
+    return any(term in name for term in terms)
+
+
+def _has_composite_primary_key(table_asset: Dict[str, Any]) -> bool:
+    columns = _get_table_columns(table_asset)
+    return sum(1 for col in columns if col.get("is_primary_key", False)) >= 2
+
+
+def _has_foreign_key_columns(table_asset: Dict[str, Any]) -> bool:
+    return any(_column_name_contains(col, ["_id", "id"]) and not col.get("is_primary_key", False) for col in _get_table_columns(table_asset))
+
+
+def _has_lookup_columns(table_asset: Dict[str, Any]) -> bool:
+    return any(_column_name_contains(col, ["lookup", "dim", "code", "type", "category"]) for col in _get_table_columns(table_asset))
+
+
+def _has_parent_reference_column(column: Dict[str, Any]) -> bool:
+    return _column_name_contains(column, ["parent_id", "manager_id", "supervisor_id", "ancestor_id", "reporting_id"])
+
+
+def _table_has_string_columns(table_asset: Dict[str, Any]) -> bool:
+    return any(_is_string_column(col) for col in _get_table_columns(table_asset))
+
+
+def _table_has_numeric_columns(table_asset: Dict[str, Any]) -> bool:
+    return any(_is_numeric_column(col) for col in _get_table_columns(table_asset))
+
+
+def _table_has_datetime_columns(table_asset: Dict[str, Any]) -> bool:
+    return any(_is_datetime_column(col) for col in _get_table_columns(table_asset))
+
+
+def _table_has_partition_columns(table_asset: Dict[str, Any]) -> bool:
+    return any(_column_name_contains(col, ["partition", "part_"]) for col in _get_table_columns(table_asset))
+
+
+def _table_has_flag_columns(table_asset: Dict[str, Any]) -> bool:
+    return any(_column_name_contains(col, ["flag", "status", "indicator"]) for col in _get_table_columns(table_asset))
+
+
+def _table_has_multiple_nullable_columns(table_asset: Dict[str, Any]) -> bool:
+    return sum(1 for col in _get_table_columns(table_asset) if not col.get("is_nullable", True)) >= 3
+
+
+def _table_has_date_order_columns(table_asset: Dict[str, Any]) -> bool:
+    return _column_name_contains(table_asset, ["created_at", "updated_at"]) or _has_cross_field_columns(table_asset)
+
+
+def _table_has_event_time_columns(table_asset: Dict[str, Any]) -> bool:
+    return any(_column_name_contains(col, ["event_time", "load_time", "arrival_time", "ingestion_time"]) for col in _get_table_columns(table_asset))
+
+
+def _table_has_derived_columns(table_asset: Dict[str, Any]) -> bool:
+    return any(_column_name_contains(col, ["total", "subtotal", "amount", "tax", "price", "discount"]) for col in _get_table_columns(table_asset))
+
+
+def _table_has_currency_columns(table_asset: Dict[str, Any]) -> bool:
+    return any(_column_name_contains(col, ["currency", "amount", "price", "cost", "fee"])
+               or _column_name_contains(col, ["usd", "eur", "gbp"]) for col in _get_table_columns(table_asset))
+
+
 # Rule assignment patterns based on column names, types, and metadata
 ASSIGNMENT_PATTERNS = {
     # Completeness rules
@@ -222,32 +311,30 @@ ASSIGNMENT_PATTERNS = {
         "business_context": "Auto-generated: {asset_name} is non-nullable."
     },
     "COMP_EMPTY_STR": {
-        "level": "COLUMN", 
-        "condition": lambda col: not col.get("is_nullable", True) and col.get("data_type", "").upper() in ["VARCHAR", "NVARCHAR", "TEXT", "STRING"],
+        "level": "COLUMN",
+        "condition": lambda col: not col.get("is_nullable", True) and _is_string_column(col),
         "business_context": "Auto-generated: {asset_name} must not be empty string."
     },
-    
-    # Uniqueness rules
-    "UNIQ_PK": {
-        "level": "COLUMN",
-        "condition": lambda col: col.get("is_primary_key", False),
-        "business_context": "Auto-generated: {asset_name} is a primary key."
+    "COMP_COL_PRES": {
+        "level": "DATASET",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
+        "business_context": "Auto-generated: {asset_name} must contain expected columns."
     },
-    "UNIQ_BIZ_KEY": {
-        "level": "COLUMN",
-        "condition": lambda col: any(keyword in col.get("asset_name", "").lower() for keyword in ["id", "key", "code", "number", "num"]) or _has_high_uniqueness_ratio(col),
-        "business_context": "Auto-generated: {asset_name} appears to be a business key."
+    "COMP_ROW_CNT": {
+        "level": "DATASET",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
+        "business_context": "Auto-generated: {asset_name} requires row count validation."
     },
     
     # Format rules
     "FMT_DTYPE": {
         "level": "COLUMN",
-        "condition": lambda col: True,  # Apply to all columns
+        "condition": lambda col: True,
         "business_context": "Auto-generated: {asset_name} must conform to declared data type."
     },
     "FMT_REGEX": {
         "level": "COLUMN",
-        "condition": lambda col: _has_email_like_values(col) or _has_phone_like_values(col) or _column_name_matches(col, ["zip", "postal"]),
+        "condition": lambda col: _has_email_like_values(col) or _has_phone_like_values(col) or _column_name_contains(col, ["zip", "postal"]),
         "business_context": "Auto-generated: {asset_name} requires pattern validation."
     },
     "FMT_DATE_VAL": {
@@ -260,12 +347,37 @@ ASSIGNMENT_PATTERNS = {
         "condition": lambda col: col.get("data_type", "").upper() in ["VARCHAR", "NVARCHAR", "CHAR"],
         "business_context": "Auto-generated: {asset_name} requires length validation."
     },
+    "FMT_TRIM": {
+        "level": "COLUMN",
+        "condition": _is_string_column,
+        "business_context": "Auto-generated: {asset_name} should not contain leading or trailing whitespace."
+    },
+    "FMT_CASE": {
+        "level": "COLUMN",
+        "condition": _is_string_column,
+        "business_context": "Auto-generated: {asset_name} should follow expected case conventions."
+    },
+    "FMT_NO_SPCL": {
+        "level": "COLUMN",
+        "condition": _is_string_column,
+        "business_context": "Auto-generated: {asset_name} should not contain special characters."
+    },
     
     # Range rules
     "RNG_NUM_RANGE": {
         "level": "COLUMN",
-        "condition": lambda col: col.get("data_type", "").upper() in ["INT", "BIGINT", "DECIMAL", "FLOAT", "DOUBLE", "NUMERIC"],
+        "condition": _is_numeric_column,
         "business_context": "Auto-generated: {asset_name} requires numeric range validation."
+    },
+    "RNG_NEG_VAL": {
+        "level": "COLUMN",
+        "condition": _is_numeric_column,
+        "business_context": "Auto-generated: {asset_name} should not contain negative values."
+    },
+    "RNG_ENUM": {
+        "level": "COLUMN",
+        "condition": lambda col: _is_string_column(col) and _column_name_contains(col, ["status", "type", "category", "code", "flag"]),
+        "business_context": "Auto-generated: {asset_name} should conform to an allowed value set."
     },
     "RNG_PCT_BOUNDS": {
         "level": "COLUMN",
@@ -277,12 +389,54 @@ ASSIGNMENT_PATTERNS = {
         "condition": _has_future_date_values,
         "business_context": "Auto-generated: {asset_name} should not be in the future."
     },
+    "RNG_YEAR_SANITY": {
+        "level": "COLUMN",
+        "condition": lambda col: _is_numeric_column(col) or _has_date_like_values(col),
+        "business_context": "Auto-generated: {asset_name} must fall within a sane year range."
+    },
+    
+    # Uniqueness rules
+    "UNIQ_PK": {
+        "level": "COLUMN",
+        "condition": lambda col: col.get("is_primary_key", False),
+        "business_context": "Auto-generated: {asset_name} is a primary key."
+    },
+    "UNIQ_COMP_KEY": {
+        "level": "ROW",
+        "condition": lambda asset: _has_composite_primary_key(asset),
+        "business_context": "Auto-generated: {asset_name} should enforce composite key uniqueness."
+    },
+    "UNIQ_DEDUP": {
+        "level": "DATASET",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
+        "business_context": "Auto-generated: {asset_name} should not contain duplicate rows."
+    },
+    "UNIQ_BIZ_KEY": {
+        "level": "COLUMN",
+        "condition": lambda col: any(keyword in col.get("asset_name", "").lower() for keyword in ["id", "key", "code", "number", "num"]) or _has_high_uniqueness_ratio(col),
+        "business_context": "Auto-generated: {asset_name} appears to be a business key."
+    },
     
     # Referential integrity rules
     "REF_FK_INTG": {
         "level": "COLUMN",
         "condition": lambda col: "_id" in col.get("asset_name", "").lower() or col.get("asset_name", "").lower().endswith("id"),
         "business_context": "Auto-generated: {asset_name} appears to be a foreign key."
+    },
+    "REF_ORPHAN": {
+        "level": "TABLE",
+        "condition": _has_foreign_key_columns,
+        "business_context": "Auto-generated: {asset_name} may contain orphaned child records."
+    },
+    "REF_LOOKUP": {
+        "level": "TABLE",
+        "condition": _has_lookup_columns,
+        "business_context": "Auto-generated: {asset_name} may contain lookup/reference values."
+    },
+    "REF_SELF_REF": {
+        "level": "COLUMN",
+        "condition": _has_parent_reference_column,
+        "business_context": "Auto-generated: {asset_name} appears to be a self-referencing foreign key."
     },
     
     # Consistency rules
@@ -291,29 +445,145 @@ ASSIGNMENT_PATTERNS = {
         "condition": _has_cross_field_columns,
         "business_context": "Auto-generated: {asset_name} requires cross-field validation."
     },
+    "CONS_COND_NN": {
+        "level": "ROW",
+        "condition": lambda asset: _table_has_multiple_nullable_columns(asset),
+        "business_context": "Auto-generated: {asset_name} likely contains conditional not-null constraints."
+    },
+    "CONS_DERIVED": {
+        "level": "ROW",
+        "condition": _table_has_derived_columns,
+        "business_context": "Auto-generated: {asset_name} may contain derived/calculated fields."
+    },
+    "CONS_AGG": {
+        "level": "DATASET",
+        "condition": _table_has_numeric_columns,
+        "business_context": "Auto-generated: {asset_name} may require aggregate consistency checks."
+    },
+    "CONS_MX_FLAGS": {
+        "level": "ROW",
+        "condition": _table_has_flag_columns,
+        "business_context": "Auto-generated: {asset_name} likely contains mutually exclusive flag fields."
+    },
+    "CONS_ST_TRANS": {
+        "level": "ROW",
+        "condition": _table_has_flag_columns,
+        "business_context": "Auto-generated: {asset_name} likely contains state transition fields."
+    },
+    "CONS_CURRENCY": {
+        "level": "DATASET",
+        "condition": _table_has_currency_columns,
+        "business_context": "Auto-generated: {asset_name} likely contains currency/unit fields."
+    },
+    
+    # Timeliness rules
+    "TIME_FRESH": {
+        "level": "DATASET",
+        "condition": _table_has_datetime_columns,
+        "business_context": "Auto-generated: {asset_name} should be checked for freshness."
+    },
+    "TIME_DATE_ORD": {
+        "level": "ROW",
+        "condition": _table_has_date_order_columns,
+        "business_context": "Auto-generated: {asset_name} should preserve chronological order."
+    },
+    "TIME_LATE_ARR": {
+        "level": "ROW",
+        "condition": _table_has_event_time_columns,
+        "business_context": "Auto-generated: {asset_name} may contain late-arriving records."
+    },
+    "TIME_STALE_REF": {
+        "level": "DATASET",
+        "condition": _table_has_datetime_columns,
+        "business_context": "Auto-generated: {asset_name} may contain stale reference data."
+    },
+    "TIME_NO_FUTURE": {
+        "level": "COLUMN",
+        "condition": _has_date_like_values,
+        "business_context": "Auto-generated: {asset_name} should not contain future timestamps."
+    },
+    
+    # Statistical rules
+    "STAT_ZSCORE": {
+        "level": "COLUMN",
+        "condition": _is_numeric_column,
+        "business_context": "Auto-generated: {asset_name} may contain outliers based on statistical deviation."
+    },
+    "STAT_ZERO_RATIO": {
+        "level": "COLUMN",
+        "condition": _is_numeric_column,
+        "business_context": "Auto-generated: {asset_name} may have unexpected zero-value ratios."
+    },
     
     # Volume rules
+    "VOLL_LOAD_COMP": {
+        "level": "DATASET",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
+        "business_context": "Auto-generated: {asset_name} should validate load completeness."
+    },
+    "VOLL_INCR_CHK": {
+        "level": "DATASET",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
+        "business_context": "Auto-generated: {asset_name} should be checked for incremental load spikes."
+    },
+    "VOLL_PART_CNT": {
+        "level": "DATASET",
+        "condition": _table_has_partition_columns,
+        "business_context": "Auto-generated: {asset_name} may require partition row count validation."
+    },
     "VOLL_EMPTY_GUARD": {
         "level": "TABLE",
-        "condition": lambda asset: asset.get("asset_type") == "TABLE",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
         "business_context": "Auto-generated: {asset_name} must not be empty."
-    },
-    "VOLL_ROW_CNT": {
-        "level": "TABLE", 
-        "condition": lambda asset: asset.get("asset_type") == "TABLE",
-        "business_context": "Auto-generated: {asset_name} requires row count validation."
     },
     
     # Schema rules
-    "SCHM_DRIFT": {
-        "level": "SCHEMA",
-        "condition": lambda asset: asset.get("asset_type") == "SCHEMA",
-        "business_context": "Auto-generated: {asset_name} schema must not drift."
-    },
     "SCHM_COL_CNT": {
         "level": "TABLE",
-        "condition": lambda asset: asset.get("asset_type") == "TABLE",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
         "business_context": "Auto-generated: {asset_name} must have expected column count."
+    },
+    "SCHM_DRIFT": {
+        "level": "SCHEMA",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "SCHEMA",
+        "business_context": "Auto-generated: {asset_name} schema must not drift."
+    },
+    "SCHM_DTYPE_DRIFT": {
+        "level": "COLUMN",
+        "condition": lambda col: True,
+        "business_context": "Auto-generated: {asset_name} should be validated for data type drift."
+    },
+    "SCHM_COL_ORDER": {
+        "level": "TABLE",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
+        "business_context": "Auto-generated: {asset_name} should maintain expected column ordering."
+    },
+    "SCHM_HDR_VAL": {
+        "level": "TABLE",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
+        "business_context": "Auto-generated: {asset_name} should maintain expected header values."
+    },
+    
+    # Table rules
+    "TBL_GROWTH_RATE": {
+        "level": "TABLE",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
+        "business_context": "Auto-generated: {asset_name} should be monitored for growth rate changes."
+    },
+    "TBL_FRESHNESS": {
+        "level": "TABLE",
+        "condition": _table_has_datetime_columns,
+        "business_context": "Auto-generated: {asset_name} freshness should be monitored."
+    },
+    "TBL_MULTICOL_NULL": {
+        "level": "TABLE",
+        "condition": _table_has_multiple_nullable_columns,
+        "business_context": "Auto-generated: {asset_name} likely contains rows with multiple null columns."
+    },
+    "TBL_CHECKSUM": {
+        "level": "TABLE",
+        "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
+        "business_context": "Auto-generated: {asset_name} should validate checksum consistency."
     }
 }
 

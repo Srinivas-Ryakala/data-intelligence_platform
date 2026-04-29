@@ -3,7 +3,7 @@ Rule executor — the core DQ engine.
 Reads active assignments, executes rule expressions against the DB, and returns results.
 A single rule erroring must NOT stop the rest of the run.
 """
-
+import os
 import logging
 from datetime import datetime
 from typing import Optional
@@ -19,6 +19,88 @@ from models.dq_rule_assignment import DQRuleAssignment
 
 logger = logging.getLogger(__name__)
 
+
+
+
+def _normalize_table_name(raw_name: str, asset_type: str) -> Optional[str]:
+    """
+    Builds a correctly quoted SQL table reference from qualified_name.
+
+    Compares the server in qualified_name against DB_SERVER in .env:
+        - Same server  → 3-part name: [database].[schema].[table]
+        - Diff server  → 4-part name: [server].[database].[schema].[table]
+                         (requires linked server configured in SSMS)
+    """
+    if not raw_name:
+        return None
+
+    parts = [p.strip() for p in raw_name.split(".") if p.strip()]
+
+    # Local server from .env — what we are currently connected to
+    local_server = os.getenv("DB_SERVER", "").strip()
+
+    if asset_type in ("PLATFORM", "DATABASE"):
+        return None  # not directly queryable
+
+    elif asset_type == "SCHEMA":
+        # parts: server(s).database.schema
+        asset_server = ".".join(parts[:-2])
+        database     = parts[-2]
+        schema       = parts[-1]
+
+        if asset_server == local_server:
+            return f"[{database}].[{schema}]"
+        else:
+            return f"[{asset_server}].[{database}].[{schema}]"
+
+    elif asset_type == "TABLE":
+        # parts: server(s).database.schema.table
+        asset_server = ".".join(parts[:-3])
+        database     = parts[-3]
+        schema       = parts[-2]
+        table        = parts[-1]
+
+        if asset_server == local_server:
+            # Same server — 3-part name, no server prefix needed
+            return f"[{database}].[{schema}].[{table}]"
+        else:
+            # Different server — 4-part name, needs linked server in SSMS
+            logger.info(
+                f"Cross-server reference detected: "
+                f"asset server={asset_server}, local server={local_server}. "
+                f"Using 4-part name — ensure linked server is configured in SSMS."
+            )
+            return f"[{asset_server}].[{database}].[{schema}].[{table}]"
+
+    elif asset_type == "COLUMN":
+        # parts: server(s).database.schema.table.column
+        # drop column — used separately as column_name
+        asset_server = ".".join(parts[:-4])
+        database     = parts[-4]
+        schema       = parts[-3]
+        table        = parts[-2]
+
+        if asset_server == local_server:
+            return f"[{database}].[{schema}].[{table}]"
+        else:
+            logger.info(
+                f"Cross-server reference detected: "
+                f"asset server={asset_server}, local server={local_server}. "
+                f"Using 4-part name — ensure linked server is configured in SSMS."
+            )
+            return f"[{asset_server}].[{database}].[{schema}].[{table}]"
+
+    else:
+        # Unknown type — best effort treat as TABLE
+        asset_server = ".".join(parts[:-3])
+        database     = parts[-3]
+        schema       = parts[-2]
+        table        = parts[-1]
+
+        if asset_server == local_server:
+            return f"[{database}].[{schema}].[{table}]"
+        else:
+            return f"[{asset_server}].[{database}].[{schema}].[{table}]"
 
 def _resolve_threshold(assignment: DQRuleAssignment, rule: DQRule) -> tuple[Optional[float], Optional[str]]:
     """
@@ -187,18 +269,32 @@ def _execute_single_assignment(run_id: int, assignment: DQRuleAssignment) -> DQR
                 executed_at=now,
             )
 
-        # ── Resolve table and column names ──
-        table_name = get_qualified_name(assignment.asset_id) or get_table_name(assignment.asset_id)
+                # ── Resolve table and column names ──
+        # get_qualified_name now returns (qualified_name, asset_type) tuple
+        qualified_name, asset_type = get_qualified_name(assignment.asset_id)
+
+        if qualified_name:
+            table_name = _normalize_table_name(qualified_name, asset_type)
+        else:
+            # fallback to plain asset_name if qualified_name is missing
+            table_name = get_table_name(assignment.asset_id)
+
         if table_name is None:
             table_name = f"ASSET_{assignment.asset_id}"
 
         column_name = None
         if assignment.column_asset_id is not None:
+            # column_name is just the plain name — not the full qualified path
             column_name = get_table_name(assignment.column_asset_id)
-            # If this is a column-level rule, get the parent table name and prefer its qualified name
+
+            # For column-level rules, get the parent TABLE's qualified name
+            # because the SQL runs against the TABLE not the column
             parent = get_parent_table_for_column(assignment.column_asset_id)
             if parent:
-                table_name = parent.get("qualified_name") or parent.get("asset_name") or table_name
+                parent_qualified = parent.get("qualified_name")
+                parent_type      = parent.get("asset_type", "TABLE")
+                if parent_qualified:
+                    table_name = _normalize_table_name(parent_qualified, parent_type) or table_name
 
         # ── Build and execute the SQL query ──
         sql = build_sql(assignment, rule, table_name, column_name)
