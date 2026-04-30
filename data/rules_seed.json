@@ -915,7 +915,7 @@
     "description": "Column data types must match the registered schema definition.",
     "rule_source": "SYSTEM",
     "created_by": null,
-    "is_active": 1,
+    "is_active": 0,
     "created_at": null,
     "updated_at": null
   },
@@ -935,7 +935,7 @@
     "description": "Column order must match expected layout \u2014 critical for positional CSV files.",
     "rule_source": "SYSTEM",
     "created_by": null,
-    "is_active": 1,
+    "is_active": 0,
     "created_at": null,
     "updated_at": null
   },
@@ -955,7 +955,7 @@
     "description": "File header names must match expected column names exactly.",
     "rule_source": "SYSTEM",
     "created_by": null,
-    "is_active": 1,
+    "is_active": 0,
     "created_at": null,
     "updated_at": null
   },
@@ -975,7 +975,7 @@
     "description": "Table row count growth rate between loads must remain within expected bounds.",
     "rule_source": "SYSTEM",
     "created_by": null,
-    "is_active": 1,
+    "is_active": 0,
     "created_at": null,
     "updated_at": null
   },
@@ -995,7 +995,7 @@
     "description": "Any table with timestamp columns must have at least one record updated within the SLA window.",
     "rule_source": "SYSTEM",
     "created_by": null,
-    "is_active": 1,
+    "is_active": 0,
     "created_at": null,
     "updated_at": null
   },
@@ -1015,7 +1015,7 @@
     "description": "Rows where multiple key columns are simultaneously null likely indicate corrupt or ghost records.",
     "rule_source": "SYSTEM",
     "created_by": null,
-    "is_active": 1,
+    "is_active": 0,
     "created_at": null,
     "updated_at": null
   },
@@ -1035,7 +1035,7 @@
     "description": "Table-level checksum or hash must match the expected value after each load for tamper detection.",
     "rule_source": "SYSTEM",
     "created_by": null,
-    "is_active": 1,
+    "is_active": 0,
     "created_at": null,
     "updated_at": null
   }

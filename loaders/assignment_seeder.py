@@ -7,7 +7,6 @@ Supports intelligent rule assignment based on:
   4. Multiple rules per asset (one-to-many relationship)
 Idempotent: checks assignment_exists() before each insert.
 """
-
 import os
 import sys
 import logging
@@ -16,10 +15,8 @@ from datetime import datetime
 from decimal import Decimal
 from numbers import Number
 from typing import List, Dict, Any, Optional
-
 # Add project root to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from configs.logging_config import setup_logging
 from configs.settings import DEFAULT_OWNER, DEFAULT_CREATED_BY
 from db.asset_repo import (
@@ -35,36 +32,28 @@ from db.connection import get_connection
 from db.rule_repo import get_all_active_rules, get_rule_by_code
 from db.assignment_repo import insert_assignment, assignment_exists
 from models.dq_rule_assignment import DQRuleAssignment
-
 setup_logging()
 logger = logging.getLogger(__name__)
-
 
 def _safe_sql_name(name: str) -> str:
     return f"[{name.replace(']', ']]')}]"
 
-
 def _parse_qualified_name(qualified_name: str) -> Optional[tuple[str, str, str, str, str]]:
     if not qualified_name:
         return None
-
     parts = [part.strip() for part in qualified_name.split('.') if part.strip()]
     if len(parts) < 5:
         return None
-
     return tuple(parts[-5:])
-
 
 def _get_column_sample_values(column: Dict[str, Any], limit: int = 50) -> list[Any]:
     parsed = _parse_qualified_name(column.get("qualified_name", ""))
     if not parsed:
         return []
-
     _, _, schema, table, column_name = parsed
     quoted_column = _safe_sql_name(column_name)
     quoted_table = f"{_safe_sql_name(schema)}.{_safe_sql_name(table)}"
     sql = f"SELECT TOP {limit} {quoted_column} FROM {quoted_table} WHERE {quoted_column} IS NOT NULL"
-
     conn = None
     try:
         conn = get_connection()
@@ -79,24 +68,19 @@ def _get_column_sample_values(column: Dict[str, Any], limit: int = 50) -> list[A
         if conn is not None:
             conn.close()
 
-
 def _is_date_value(value: Any) -> bool:
     if isinstance(value, datetime):
         return True
-
     if not isinstance(value, str):
         return False
-
     value = value.strip()
     if not value:
         return False
-
     try:
         datetime.fromisoformat(value)
         return True
     except ValueError:
         pass
-
     date_formats = [
         "%Y-%m-%d",
         "%Y-%m-%d %H:%M:%S",
@@ -114,16 +98,13 @@ def _is_date_value(value: Any) -> bool:
             continue
     return False
 
-
 def _numeric_sample_values(column: Dict[str, Any], min_count: int = 3) -> list[Number]:
     samples = _get_column_sample_values(column, limit=50)
     numeric_values = []
-
     for value in samples:
         if isinstance(value, Number):
             numeric_values.append(value)
             continue
-
         if isinstance(value, str):
             cleaned = re.sub(r"[^0-9.\-]", "", value)
             if cleaned == "" or cleaned in {"-", ".", "-."}:
@@ -132,20 +113,16 @@ def _numeric_sample_values(column: Dict[str, Any], min_count: int = 3) -> list[N
                 numeric_values.append(Decimal(cleaned))
             except Exception:
                 continue
-
     return numeric_values if len(numeric_values) >= min_count else []
-
 
 def _column_name_matches(column: Dict[str, Any], terms: list[str]) -> bool:
     name = column.get("asset_name", "").lower()
     return any(term in name for term in terms)
 
-
 def _has_email_like_values(column: Dict[str, Any]) -> bool:
     if _column_name_matches(column, ["email"]):
         return True
     return any(isinstance(value, str) and re.search(r"[^@\s]+@[^@\s]+\.[^@\s]+", value) for value in _get_column_sample_values(column, limit=50))
-
 
 def _has_phone_like_values(column: Dict[str, Any]) -> bool:
     if _column_name_matches(column, ["phone", "mobile", "tel"]):
@@ -157,7 +134,6 @@ def _has_phone_like_values(column: Dict[str, Any]) -> bool:
                 return True
     return False
 
-
 def _has_date_like_values(column: Dict[str, Any]) -> bool:
     if column.get("data_type", "").lower() in ["date", "datetime", "datetime2", "smalldatetime", "time", "timestamp"]:
         return True
@@ -166,18 +142,15 @@ def _has_date_like_values(column: Dict[str, Any]) -> bool:
             return True
     return False
 
-
 def _has_percent_like_values(column: Dict[str, Any]) -> bool:
     if _column_name_matches(column, ["percent", "pct"]):
         return True
     values = _numeric_sample_values(column, min_count=3)
     return bool(values and all(0 <= float(value) <= 100 for value in values))
 
-
 def _has_future_date_values(column: Dict[str, Any]) -> bool:
     if not _has_date_like_values(column):
         return False
-
     samples = _get_column_sample_values(column, limit=50)
     now = datetime.now()
     for value in samples:
@@ -192,7 +165,6 @@ def _has_future_date_values(column: Dict[str, Any]) -> bool:
                 pass
     return False
 
-
 def _has_high_uniqueness_ratio(column: Dict[str, Any]) -> bool:
     if _column_name_matches(column, ["id", "key", "code", "number", "num"]):
         values = _get_column_sample_values(column, limit=100)
@@ -201,7 +173,6 @@ def _has_high_uniqueness_ratio(column: Dict[str, Any]) -> bool:
         unique_ratio = len(set(values)) / len(values)
         return unique_ratio >= 0.9
     return False
-
 
 def _has_cross_field_columns(table_asset: Dict[str, Any]) -> bool:
     columns = get_columns_for_table(table_asset.get("asset_id"))
@@ -212,9 +183,7 @@ def _has_cross_field_columns(table_asset: Dict[str, Any]) -> bool:
         or ("min" in " ".join(names) and "max" in " ".join(names))
     )
 
-
 _table_columns_cache: Dict[int, list[Dict[str, Any]]] = {}
-
 
 def _get_table_columns(table_asset: Dict[str, Any]) -> list[Dict[str, Any]]:
     asset_id = table_asset.get("asset_id")
@@ -224,83 +193,64 @@ def _get_table_columns(table_asset: Dict[str, Any]) -> list[Dict[str, Any]]:
         _table_columns_cache[asset_id] = get_columns_for_table(asset_id)
     return _table_columns_cache[asset_id]
 
-
 def _is_string_column(column: Dict[str, Any]) -> bool:
     data_type = column.get("data_type", "").upper()
     name = column.get("asset_name", "").lower()
     return data_type in ["VARCHAR", "NVARCHAR", "CHAR", "TEXT", "STRING"] or any(keyword in name for keyword in ["name", "code", "status", "type", "city", "country", "zip", "postal", "email", "phone"])
 
-
 def _is_numeric_column(column: Dict[str, Any]) -> bool:
     return column.get("data_type", "").upper() in ["INT", "BIGINT", "DECIMAL", "FLOAT", "DOUBLE", "NUMERIC", "SMALLINT", "TINYINT"]
 
-
 def _is_datetime_column(column: Dict[str, Any]) -> bool:
     return column.get("data_type", "").upper() in ["DATE", "DATETIME", "DATETIME2", "SMALLDATETIME", "TIMESTAMP", "TIME"] or _column_name_matches(column, ["date", "time", "timestamp", "created_at", "updated_at", "event_time", "load_time"])
-
 
 def _column_name_contains(column: Dict[str, Any], terms: list[str]) -> bool:
     name = column.get("asset_name", "").lower()
     return any(term in name for term in terms)
 
-
 def _has_composite_primary_key(table_asset: Dict[str, Any]) -> bool:
     columns = _get_table_columns(table_asset)
     return sum(1 for col in columns if col.get("is_primary_key", False)) >= 2
 
-
 def _has_foreign_key_columns(table_asset: Dict[str, Any]) -> bool:
     return any(_column_name_contains(col, ["_id", "id"]) and not col.get("is_primary_key", False) for col in _get_table_columns(table_asset))
-
 
 def _has_lookup_columns(table_asset: Dict[str, Any]) -> bool:
     return any(_column_name_contains(col, ["lookup", "dim", "code", "type", "category"]) for col in _get_table_columns(table_asset))
 
-
 def _has_parent_reference_column(column: Dict[str, Any]) -> bool:
     return _column_name_contains(column, ["parent_id", "manager_id", "supervisor_id", "ancestor_id", "reporting_id"])
-
 
 def _table_has_string_columns(table_asset: Dict[str, Any]) -> bool:
     return any(_is_string_column(col) for col in _get_table_columns(table_asset))
 
-
 def _table_has_numeric_columns(table_asset: Dict[str, Any]) -> bool:
     return any(_is_numeric_column(col) for col in _get_table_columns(table_asset))
-
 
 def _table_has_datetime_columns(table_asset: Dict[str, Any]) -> bool:
     return any(_is_datetime_column(col) for col in _get_table_columns(table_asset))
 
-
 def _table_has_partition_columns(table_asset: Dict[str, Any]) -> bool:
     return any(_column_name_contains(col, ["partition", "part_"]) for col in _get_table_columns(table_asset))
-
 
 def _table_has_flag_columns(table_asset: Dict[str, Any]) -> bool:
     return any(_column_name_contains(col, ["flag", "status", "indicator"]) for col in _get_table_columns(table_asset))
 
-
 def _table_has_multiple_nullable_columns(table_asset: Dict[str, Any]) -> bool:
     return sum(1 for col in _get_table_columns(table_asset) if not col.get("is_nullable", True)) >= 3
-
 
 def _table_has_date_order_columns(table_asset: Dict[str, Any]) -> bool:
     return _column_name_contains(table_asset, ["created_at", "updated_at"]) or _has_cross_field_columns(table_asset)
 
-
 def _table_has_event_time_columns(table_asset: Dict[str, Any]) -> bool:
     return any(_column_name_contains(col, ["event_time", "load_time", "arrival_time", "ingestion_time"]) for col in _get_table_columns(table_asset))
-
 
 def _table_has_derived_columns(table_asset: Dict[str, Any]) -> bool:
     return any(_column_name_contains(col, ["total", "subtotal", "amount", "tax", "price", "discount"]) for col in _get_table_columns(table_asset))
 
-
 def _table_has_currency_columns(table_asset: Dict[str, Any]) -> bool:
     return any(_column_name_contains(col, ["currency", "amount", "price", "cost", "fee"])
                or _column_name_contains(col, ["usd", "eur", "gbp"]) for col in _get_table_columns(table_asset))
-
 
 # Rule assignment patterns based on column names, types, and metadata
 ASSIGNMENT_PATTERNS = {
@@ -325,7 +275,6 @@ ASSIGNMENT_PATTERNS = {
         "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
         "business_context": "Auto-generated: {asset_name} requires row count validation."
     },
-    
     # Format rules
     "FMT_DTYPE": {
         "level": "COLUMN",
@@ -362,7 +311,6 @@ ASSIGNMENT_PATTERNS = {
         "condition": _is_string_column,
         "business_context": "Auto-generated: {asset_name} should not contain special characters."
     },
-    
     # Range rules
     "RNG_NUM_RANGE": {
         "level": "COLUMN",
@@ -391,10 +339,12 @@ ASSIGNMENT_PATTERNS = {
     },
     "RNG_YEAR_SANITY": {
         "level": "COLUMN",
-        "condition": lambda col: _is_numeric_column(col) or _has_date_like_values(col),
+        # Only assign to DATE/DATETIME columns. Numeric columns look like "year"
+        # values but TRY_CAST(float AS DATE) raises error 529 in SQL Server
+        # even inside TRY_CAST — it is an explicit conversion that is never allowed.
+        "condition": _has_date_like_values,
         "business_context": "Auto-generated: {asset_name} must fall within a sane year range."
     },
-    
     # Uniqueness rules
     "UNIQ_PK": {
         "level": "COLUMN",
@@ -416,7 +366,6 @@ ASSIGNMENT_PATTERNS = {
         "condition": lambda col: any(keyword in col.get("asset_name", "").lower() for keyword in ["id", "key", "code", "number", "num"]) or _has_high_uniqueness_ratio(col),
         "business_context": "Auto-generated: {asset_name} appears to be a business key."
     },
-    
     # Referential integrity rules
     "REF_FK_INTG": {
         "level": "COLUMN",
@@ -438,7 +387,6 @@ ASSIGNMENT_PATTERNS = {
         "condition": _has_parent_reference_column,
         "business_context": "Auto-generated: {asset_name} appears to be a self-referencing foreign key."
     },
-    
     # Consistency rules
     "CONS_XFLD": {
         "level": "ROW",
@@ -475,7 +423,6 @@ ASSIGNMENT_PATTERNS = {
         "condition": _table_has_currency_columns,
         "business_context": "Auto-generated: {asset_name} likely contains currency/unit fields."
     },
-    
     # Timeliness rules
     "TIME_FRESH": {
         "level": "DATASET",
@@ -502,7 +449,6 @@ ASSIGNMENT_PATTERNS = {
         "condition": _has_date_like_values,
         "business_context": "Auto-generated: {asset_name} should not contain future timestamps."
     },
-    
     # Statistical rules
     "STAT_ZSCORE": {
         "level": "COLUMN",
@@ -514,7 +460,6 @@ ASSIGNMENT_PATTERNS = {
         "condition": _is_numeric_column,
         "business_context": "Auto-generated: {asset_name} may have unexpected zero-value ratios."
     },
-    
     # Volume rules
     "VOLL_LOAD_COMP": {
         "level": "DATASET",
@@ -536,7 +481,6 @@ ASSIGNMENT_PATTERNS = {
         "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
         "business_context": "Auto-generated: {asset_name} must not be empty."
     },
-    
     # Schema rules
     "SCHM_COL_CNT": {
         "level": "TABLE",
@@ -563,7 +507,6 @@ ASSIGNMENT_PATTERNS = {
         "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
         "business_context": "Auto-generated: {asset_name} should maintain expected header values."
     },
-    
     # Table rules
     "TBL_GROWTH_RATE": {
         "level": "TABLE",
@@ -587,26 +530,22 @@ ASSIGNMENT_PATTERNS = {
     }
 }
 
-
 def _matches_pattern(column: Dict[str, Any], rule_code: str) -> bool:
     """Check if a column matches the assignment pattern for a rule."""
     pattern = ASSIGNMENT_PATTERNS.get(rule_code)
     if not pattern:
         return False
-    
     try:
         return pattern["condition"](column)
     except Exception as e:
         logger.warning(f"Error evaluating pattern for {rule_code}: {e}")
         return False
 
-
 def _get_business_context(column: Dict[str, Any], rule_code: str) -> str:
     """Generate business context for the assignment."""
     pattern = ASSIGNMENT_PATTERNS.get(rule_code, {})
     template = pattern.get("business_context", "Auto-generated assignment for {asset_name}.")
     return template.format(asset_name=column.get("asset_name", "Unknown"))
-
 
 def _get_assignment_scope(rule_level: str) -> str:
     """Map rule level to assignment scope."""
@@ -619,53 +558,54 @@ def _get_assignment_scope(rule_level: str) -> str:
     }
     return level_to_scope.get(rule_level, "COLUMN")
 
-
 def seed_intelligent_assignments() -> tuple[int, int]:
     """
     Intelligently assign rules to assets based on patterns and metadata.
     Supports multiple rules per asset.
-    
     Excludes rules that are already handled by mandatory seeders:
     - COMP_NULL_CHK (handled by seed_null_check_assignments)
     - UNIQ_PK (handled by seed_pk_uniqueness_assignments)  
     - VOLL_EMPTY_GUARD (handled by seed_empty_guard_assignments)
     - SCHM_DRIFT (handled by seed_schema_drift_assignments)
-    
     Returns:
         tuple[int, int]: (inserted_count, skipped_count)
     """
     # Rules handled by mandatory seeders — exclude from intelligent assignment
     mandatory_rules = {"COMP_NULL_CHK", "UNIQ_PK", "VOLL_EMPTY_GUARD", "SCHM_DRIFT"}
-    
     rules = get_all_active_rules()
     assets = get_all_assets()
-    
     inserted = 0
     skipped = 0
-    
     # Group assets by type for efficient processing
     columns = [a for a in assets if a.get("asset_type", "").upper() == "COLUMN"]
     tables = [a for a in assets if a.get("asset_type", "").upper() == "TABLE"] 
     schemas = [a for a in assets if a.get("asset_type", "").upper() == "SCHEMA"]
-    
     logger.info(f"Found {len(columns)} columns, {len(tables)} tables, {len(schemas)} schemas")
-    
     # Process each rule
     for rule in rules:
         rule_code = rule.rule_code
-        
         # Skip rules handled by mandatory seeders
         if rule_code in mandatory_rules:
             logger.debug(f"Skipping {rule_code} — handled by mandatory seeder")
             continue
-            
         if rule_code not in ASSIGNMENT_PATTERNS:
-            logger.debug(f"No assignment pattern for {rule_code} — skipping")
-            continue
-            
+            # Rule exists in rules_seed.json but has no assignment pattern yet.
+            # Use a safe default: assign to all TABLE-level assets.
+            # Add a dedicated entry to ASSIGNMENT_PATTERNS to get smarter targeting.
+            logger.warning(
+                f"No assignment pattern found for rule '{rule_code}'. "
+                f"Using default TABLE-level fallback. "
+                f"Add an entry to ASSIGNMENT_PATTERNS in assignment_seeder.py "
+                f"to control which assets receive this rule."
+            )
+            _fallback_pattern = {
+                "level": "TABLE",
+                "condition": lambda asset: asset.get("asset_type", "").upper() == "TABLE",
+                "business_context": f"Auto-generated (fallback): {{asset_name}} — rule {rule_code}.",
+            }
+            ASSIGNMENT_PATTERNS[rule_code] = _fallback_pattern
         pattern = ASSIGNMENT_PATTERNS[rule_code]
         expected_level = pattern["level"]
-        
         # Get appropriate assets for this rule level
         if expected_level == "COLUMN":
             target_assets = columns
@@ -675,7 +615,6 @@ def seed_intelligent_assignments() -> tuple[int, int]:
             target_assets = schemas
         else:
             continue
-            
         # Assign rule to matching assets
         for asset in target_assets:
             if _matches_pattern(asset, rule_code):
@@ -686,19 +625,16 @@ def seed_intelligent_assignments() -> tuple[int, int]:
                 else:
                     asset_id = asset.get("asset_id")
                     column_asset_id = None
-
                 if asset_id is None or not asset_exists(asset_id):
                     skipped += 1
                     logger.warning(
                         f"Skipping intelligent assignment for rule {rule_code} because asset_id {asset_id} does not exist or is invalid for asset {asset.get('asset_name')}"
                     )
                     continue
-
                 # Check if assignment already exists
                 if assignment_exists(rule.dq_rule_id, asset_id, column_asset_id):
                     skipped += 1
                     continue
-                
                 # Create assignment
                 assignment = DQRuleAssignment(
                     dq_rule_id=rule.dq_rule_id,
@@ -710,43 +646,38 @@ def seed_intelligent_assignments() -> tuple[int, int]:
                     execution_frequency="EVERY_RUN",
                     business_context=_get_business_context(asset, rule_code),
                     owner_name=DEFAULT_OWNER,
-                    is_mandatory=False,  # Intelligent assignments are suggestions
+                    # Critical and High severity rules are mandatory — failures
+                    # must generate DQ_ISSUE records.  Medium rules are advisory.
+                    is_mandatory=rule.severity in ("Critical", "High"),
                     is_active=True,
                     created_by=DEFAULT_CREATED_BY,
                 )
-                
                 new_id = insert_assignment(assignment)
                 if new_id is not None:
                     inserted += 1
                     logger.debug(f"Assigned {rule_code} to {asset.get('asset_name', 'Unknown')}")
                 else:
                     logger.warning(f"Failed to assign {rule_code} to asset {asset_id}")
-    
     logger.info(f"Intelligent assignments: {inserted} inserted, {skipped} skipped")
     return inserted, skipped
-
 
 def seed_null_check_assignments() -> tuple[int, int]:
     rule = get_rule_by_code("COMP_NULL_CHK")
     if rule is None:
         logger.error("Rule COMP_NULL_CHK not found in DQ_RULE. Run rule_seeder first.")
         return 0, 0
-
     columns = get_nullable_columns()
     inserted = 0
     skipped = 0
-
     for col in columns:
         asset_id = col.get("parent_asset_id")
         column_asset_id = col.get("asset_id")
         platform_id = col.get("platform_id")
         # pipeline_id = col.get("pipeline_id")
         # parse_run_id = col.get("parse_run_id")
-
         if assignment_exists(rule.dq_rule_id, asset_id, column_asset_id):
             skipped += 1
             continue
-
         assignment = DQRuleAssignment(
             dq_rule_id=rule.dq_rule_id,
             asset_id=asset_id,
@@ -763,7 +694,6 @@ def seed_null_check_assignments() -> tuple[int, int]:
             is_active=True,
             created_by=DEFAULT_CREATED_BY,
         )
-
         new_id = insert_assignment(assignment)
         if new_id is not None:
             inserted += 1
@@ -771,15 +701,12 @@ def seed_null_check_assignments() -> tuple[int, int]:
             logger.warning(
                 f"Failed to insert null-check assignment for column {column_asset_id}."
             )
-
     logger.info(f"Null Check assignments: {inserted} inserted, {skipped} skipped.")
     return inserted, skipped
-
 
 def seed_pk_uniqueness_assignments() -> tuple[int, int]:
     """
     Auto-generate UNIQ_PK assignments for every primary key column.
-
     Returns:
         tuple[int, int]: (inserted_count, skipped_count)
     """
@@ -787,20 +714,16 @@ def seed_pk_uniqueness_assignments() -> tuple[int, int]:
     if rule is None:
         logger.error("Rule UNIQ_PK not found in DQ_RULE. Run rule_seeder first.")
         return 0, 0
-
     pk_columns = get_pk_columns()
     inserted = 0
     skipped = 0
-
     for col in pk_columns:
         asset_id = col.get("parent_asset_id")
         column_asset_id = col.get("asset_id")
         platform_id = col.get("platform_id")
-
         if assignment_exists(rule.dq_rule_id, asset_id, column_asset_id):
             skipped += 1
             continue
-
         assignment = DQRuleAssignment(
             dq_rule_id=rule.dq_rule_id,
             asset_id=asset_id,
@@ -815,7 +738,6 @@ def seed_pk_uniqueness_assignments() -> tuple[int, int]:
             is_active=True,
             created_by=DEFAULT_CREATED_BY,
         )
-
         new_id = insert_assignment(assignment)
         if new_id is not None:
             inserted += 1
@@ -823,15 +745,12 @@ def seed_pk_uniqueness_assignments() -> tuple[int, int]:
             logger.warning(
                 f"Failed to insert PK-uniqueness assignment for column {column_asset_id}."
             )
-
     logger.info(f"PK Uniqueness assignments: {inserted} inserted, {skipped} skipped.")
     return inserted, skipped
-
 
 def seed_empty_guard_assignments() -> tuple[int, int]:
     """
     Auto-generate VOLL_EMPTY_GUARD assignments for every TABLE asset.
-
     Returns:
         tuple[int, int]: (inserted_count, skipped_count)
     """
@@ -839,19 +758,15 @@ def seed_empty_guard_assignments() -> tuple[int, int]:
     if rule is None:
         logger.error("Rule VOLL_EMPTY_GUARD not found in DQ_RULE. Run rule_seeder first.")
         return 0, 0
-
     tables = get_table_assets()
     inserted = 0
     skipped = 0
-
     for table in tables:
         asset_id = table.get("asset_id")
         platform_id = table.get("platform_id")
-
         if assignment_exists(rule.dq_rule_id, asset_id, None):
             skipped += 1
             continue
-
         assignment = DQRuleAssignment(
             dq_rule_id=rule.dq_rule_id,
             asset_id=asset_id,
@@ -866,7 +781,6 @@ def seed_empty_guard_assignments() -> tuple[int, int]:
             is_active=True,
             created_by=DEFAULT_CREATED_BY,
         )
-
         new_id = insert_assignment(assignment)
         if new_id is not None:
             inserted += 1
@@ -874,15 +788,12 @@ def seed_empty_guard_assignments() -> tuple[int, int]:
             logger.warning(
                 f"Failed to insert empty-guard assignment for table {asset_id}."
             )
-
     logger.info(f"Empty Guard assignments: {inserted} inserted, {skipped} skipped.")
     return inserted, skipped
-
 
 def seed_schema_drift_assignments() -> tuple[int, int]:
     """
     Auto-generate SCHM_DRIFT assignments for every SCHEMA asset.
-
     Returns:
         tuple[int, int]: (inserted_count, skipped_count)
     """
@@ -890,24 +801,19 @@ def seed_schema_drift_assignments() -> tuple[int, int]:
     if rule is None:
         logger.error("Rule SCHM_DRIFT not found in DQ_RULE. Run rule_seeder first.")
         return 0, 0
-
     schemas = get_schema_assets()
     inserted = 0
     skipped = 0
-
     for schema in schemas:
         asset_id = schema.get("asset_id")
         platform_id = schema.get("platform_id")
-
         if not asset_exists(asset_id):
             skipped += 1
             logger.warning(f"Skipping schema-drift assignment for schema {asset_id} — asset does not exist")
             continue
-
         if assignment_exists(rule.dq_rule_id, asset_id, None):
             skipped += 1
             continue
-
         assignment = DQRuleAssignment(
             dq_rule_id=rule.dq_rule_id,
             asset_id=asset_id,
@@ -922,7 +828,6 @@ def seed_schema_drift_assignments() -> tuple[int, int]:
             is_active=True,
             created_by=DEFAULT_CREATED_BY,
         )
-
         new_id = insert_assignment(assignment)
         if new_id is not None:
             inserted += 1
@@ -930,48 +835,37 @@ def seed_schema_drift_assignments() -> tuple[int, int]:
             logger.warning(
                 f"Failed to insert schema-drift assignment for schema {asset_id}."
             )
-
     logger.info(f"Schema Drift assignments: {inserted} inserted, {skipped} skipped.")
     return inserted, skipped
-
 
 def seed_all_assignments() -> None:
     """
     Run all assignment seeders and print a combined summary.
     Includes both mandatory and intelligent assignments.
-
     Returns:
         None
     """
     total_inserted = 0
     total_skipped = 0
-
     # Mandatory assignments (critical rules that must be applied)
     logger.info("Running mandatory assignment seeders...")
-    
     ins, skip = seed_null_check_assignments()
     total_inserted += ins
     total_skipped += skip
-
     ins, skip = seed_pk_uniqueness_assignments()
     total_inserted += ins
     total_skipped += skip
-
     ins, skip = seed_empty_guard_assignments()
     total_inserted += ins
     total_skipped += skip
-
     ins, skip = seed_schema_drift_assignments()
     total_inserted += ins
     total_skipped += skip
-
     # Intelligent assignments (pattern-based suggestions)
     logger.info("Running intelligent assignment seeder...")
-    
     ins, skip = seed_intelligent_assignments()
     total_inserted += ins
     total_skipped += skip
-
     # ── Summary ──
     summary = (
         f"\n{'='*60}\n"
@@ -987,7 +881,6 @@ def seed_all_assignments() -> None:
     )
     logger.info(summary)
     print(summary)
-
 
 if __name__ == "__main__":
     seed_all_assignments()

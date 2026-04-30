@@ -24,7 +24,7 @@ def get_connection():
     for attempt in range(1, max_retries + 1):
         try:
             conn = pyodbc.connect(connection_string)
-            logger.info("Database connection established successfully.")
+            # logger.info("Database connection established successfully.")
             return conn
 
         except Exception as e:
