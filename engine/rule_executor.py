@@ -173,12 +173,13 @@ def _fetch_sample_failed_values(
     rule_code: str,
     table_name: str,
     column_name: Optional[str],
+    rule: Optional[DQRule] = None,
 ) -> Optional[str]:
     """
     Run a TOP-5 query to get sample failing values for display in DQ_RESULT.
     Non-critical — failure returns None.
     """
-    sample_sql = build_sample_sql(rule_code, table_name, column_name)
+    sample_sql = build_sample_sql(rule_code, table_name, column_name, rule=rule)
     if not sample_sql:
         return None
     try:
@@ -320,7 +321,7 @@ def _execute_single_assignment(run_id: int, assignment: DQRuleAssignment) -> DQR
         sample_failed_value = None
         if result_status == "FAILED" and failed_row_count and failed_row_count > 0:
             sample_failed_value = _fetch_sample_failed_values(
-                rule.rule_code, table_name, column_name
+                rule.rule_code, table_name, column_name, rule=rule
             )
         # ── Build result message ───────────────────────────────────────────
         result_message = _build_result_message(

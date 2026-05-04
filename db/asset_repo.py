@@ -279,3 +279,114 @@ def asset_exists(asset_id: int) -> bool:
     except Exception as e:
         logger.error(f"Failed to check if asset {asset_id} exists: {e}")
         return False
+
+
+def get_column_data_type(column_asset_id: int) -> Optional[str]:
+    """
+    Get the data_type for a COLUMN asset.
+
+    Args:
+        column_asset_id: The asset_id of the column.
+
+    Returns:
+        str or None: The data type string (e.g. 'INT', 'VARCHAR'), or None.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT data_type FROM DATA_ASSET WHERE asset_id = ?",
+            column_asset_id
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row and row[0] else None
+    except Exception as e:
+        logger.error(f"Failed to get data type for column asset {column_asset_id}: {e}")
+        return None
+
+
+def get_platforms() -> list[dict]:
+    """
+    Fetch all top-level SERVER assets (top of the hierarchy).
+
+    Returns:
+        list[dict]: Server assets.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM DATA_ASSET
+            WHERE asset_type = 'SERVER'
+              AND is_active = 1
+            """
+        )
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(zip(columns, row)) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to fetch servers: {e}")
+        return []
+
+
+def get_children_by_type(parent_asset_id: int, asset_type: str) -> list[dict]:
+    """
+    Fetch all children of a parent asset filtered by asset_type.
+
+    Args:
+        parent_asset_id: The parent asset_id.
+        asset_type: The child asset type (DATABASE, SCHEMA, TABLE, COLUMN).
+
+    Returns:
+        list[dict]: Child assets of the specified type.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM DATA_ASSET
+            WHERE parent_asset_id = ?
+              AND asset_type = ?
+              AND is_active = 1
+            ORDER BY asset_name
+            """,
+            parent_asset_id, asset_type
+        )
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(zip(columns, row)) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to fetch {asset_type} children of asset {parent_asset_id}: {e}")
+        return []
+
+
+def get_asset_by_id(asset_id: int) -> Optional[dict]:
+    """
+    Fetch a single asset by its ID.
+
+    Args:
+        asset_id: The asset_id to look up.
+
+    Returns:
+        dict or None: The asset data, or None if not found.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM DATA_ASSET WHERE asset_id = ?",
+            asset_id
+        )
+        columns = [desc[0] for desc in cursor.description]
+        row = cursor.fetchone()
+        conn.close()
+        return dict(zip(columns, row)) if row else None
+    except Exception as e:
+        logger.error(f"Failed to fetch asset {asset_id}: {e}")
+        return None
+

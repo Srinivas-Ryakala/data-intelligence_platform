@@ -129,6 +129,51 @@ def generate_run_report(dq_run_id: int) -> str:
         if not top_failures:
             report_lines.append("  No failures — all rules passed!")
 
+        # ── Partial status breakdown ──
+        run_status = run.get('run_status', 'N/A')
+        if run_status == "PARTIAL":
+            report_lines.append("")
+            report_lines.append("-" * 70)
+            report_lines.append("PARTIAL RUN BREAKDOWN")
+            report_lines.append("-" * 70)
+            report_lines.append("")
+
+            passed_results = [r for r in results if r.get("result_status") == "PASSED"]
+            failed_results_detail = [r for r in results if r.get("result_status") == "FAILED"]
+            warned_results = [r for r in results if r.get("result_status") == "WARNED"]
+            error_results = [r for r in results if r.get("result_status") == "ERROR"]
+
+            if passed_results:
+                report_lines.append(f"  ✓ PASSED ({len(passed_results)} rules):")
+                for r in passed_results:
+                    rule = get_rule_by_id(r.get("dq_rule_id"))
+                    rule_name = rule.rule_code if rule else f"Rule_{r.get('dq_rule_id')}"
+                    asset_name = get_table_name(r.get("asset_id")) or f"Asset_{r.get('asset_id')}"
+                    report_lines.append(f"    - {rule_name} on {asset_name}")
+
+            if failed_results_detail:
+                report_lines.append(f"  ✗ FAILED ({len(failed_results_detail)} rules):")
+                for r in failed_results_detail:
+                    rule = get_rule_by_id(r.get("dq_rule_id"))
+                    rule_name = rule.rule_code if rule else f"Rule_{r.get('dq_rule_id')}"
+                    asset_name = get_table_name(r.get("asset_id")) or f"Asset_{r.get('asset_id')}"
+                    observed = r.get("observed_value", "N/A")
+                    report_lines.append(f"    - {rule_name} on {asset_name} (observed: {observed})")
+
+            if warned_results:
+                report_lines.append(f"  ⚠ WARNED ({len(warned_results)} rules):")
+                for r in warned_results:
+                    rule = get_rule_by_id(r.get("dq_rule_id"))
+                    rule_name = rule.rule_code if rule else f"Rule_{r.get('dq_rule_id')}"
+                    report_lines.append(f"    - {rule_name}")
+
+            if error_results:
+                report_lines.append(f"  ⊘ ERROR ({len(error_results)} rules):")
+                for r in error_results:
+                    rule = get_rule_by_id(r.get("dq_rule_id"))
+                    rule_name = rule.rule_code if rule else f"Rule_{r.get('dq_rule_id')}"
+                    report_lines.append(f"    - {rule_name}")
+
         report_lines.append("")
         report_lines.append("=" * 70)
 

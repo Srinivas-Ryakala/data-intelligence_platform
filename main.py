@@ -15,7 +15,7 @@ from engine.rule_executor import execute_all
 from engine.score_calculator import calculate_scores
 from engine.issue_generator import generate_issues
 from models.dq_run import DQRun
-from db.assignment_repo import get_active_assignments, get_assignment_by_id
+from db.assignment_repo import get_active_assignments
 
 def main() -> None:
     setup_logging()
@@ -101,18 +101,15 @@ def main() -> None:
         total_failed  = sum(1 for r in results if r.result_status == "FAILED")
         total_warned  = sum(1 for r in results if r.result_status == "WARNED")
         total_rules   = len(results)
-        has_blocking_failure = False
-        assignment_cache: dict = {}
-        for r in results:
-            if r.result_status == "FAILED" and r.dq_rule_assignment_id:
-                aid = r.dq_rule_assignment_id
-                if aid not in assignment_cache:
-                    assignment_cache[aid] = get_assignment_by_id(aid)
-                assignment = assignment_cache[aid]
-                if assignment and assignment.execution_mode == "BLOCKING":
-                    has_blocking_failure = True
-                    break
-        run_status = "FAILED" if has_blocking_failure else "SUCCESS"
+        # ── Determine run status: SUCCESS / FAILED / PARTIAL ──────────
+        if total_rules == 0:
+            run_status = "SUCCESS"
+        elif total_failed == total_rules:
+            run_status = "FAILED"
+        elif total_failed == 0:
+            run_status = "SUCCESS"
+        else:
+            run_status = "PARTIAL"
         run_summary = (
             f"{total_passed} passed, {total_failed} failed, {total_warned} warned "
             f"out of {total_rules} rules. {issues_inserted} issues created."

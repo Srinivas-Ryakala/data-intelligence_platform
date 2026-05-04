@@ -45,7 +45,7 @@ def assignment_exists(
     column_asset_id: Optional[int] = None
 ) -> bool:
     """
-    Check if an assignment already exists for the given rule + asset + column combination.
+    Check if an ACTIVE assignment already exists for the given rule + asset + column.
 
     Args:
         dq_rule_id: The rule ID.
@@ -53,7 +53,7 @@ def assignment_exists(
         column_asset_id: The column-level asset ID (None for table-level rules).
 
     Returns:
-        bool: True if the assignment already exists.
+        bool: True if an active assignment already exists.
     """
     try:
         conn = get_connection()
@@ -66,6 +66,7 @@ def assignment_exists(
                 WHERE dq_rule_id = ?
                   AND asset_id = ?
                   AND column_asset_id IS NULL
+                  AND is_active = 1
                 """,
                 dq_rule_id, asset_id
             )
@@ -76,6 +77,7 @@ def assignment_exists(
                 WHERE dq_rule_id = ?
                   AND asset_id = ?
                   AND column_asset_id = ?
+                  AND is_active = 1
                 """,
                 dq_rule_id, asset_id, column_asset_id
             )
@@ -98,7 +100,6 @@ def insert_assignment(assignment: DQRuleAssignment) -> Optional[int]:
     Returns:
         int or None: The new dq_rule_assignment_id, or None on error.
     """
-    print("platform id:", assignment.platform_id)
     try:
         now = datetime.now()
         conn = get_connection()
@@ -201,3 +202,67 @@ def get_assignment_by_id(dq_rule_assignment_id: int) -> Optional[DQRuleAssignmen
     except Exception as e:
         logger.error(f"Failed to fetch assignment {dq_rule_assignment_id}: {e}")
         return None
+
+
+def list_active_assignments_summary() -> list[dict]:
+    """
+    Fetch a summary of all active assignments with rule and asset names.
+    Used by the CLI for display.
+
+    Returns:
+        list[dict]: Active assignments with rule_code, asset_name, etc.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                a.dq_rule_assignment_id,
+                r.rule_code,
+                r.rule_name,
+                da.asset_name AS table_name,
+                ca.asset_name AS column_name,
+                a.created_at
+            FROM DQ_RULE_ASSIGNMENT a
+            JOIN DQ_RULE r ON a.dq_rule_id = r.dq_rule_id
+            LEFT JOIN DATA_ASSET da ON a.asset_id = da.asset_id
+            LEFT JOIN DATA_ASSET ca ON a.column_asset_id = ca.asset_id
+            WHERE a.is_active = 1
+            ORDER BY a.dq_rule_assignment_id
+            """
+        )
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(zip(columns, row)) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to list active assignments: {e}")
+        return []
+
+
+def deactivate_all_assignments() -> int:
+    """
+    Deactivate ALL active assignments. Used for a clean reset before re-assigning.
+
+    Returns:
+        int: Number of assignments deactivated.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE DQ_RULE_ASSIGNMENT
+            SET is_active = 0, updated_at = GETDATE()
+            WHERE is_active = 1
+            """
+        )
+        count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        logger.info(f"Deactivated {count} assignments.")
+        return count
+    except Exception as e:
+        logger.error(f"Failed to deactivate all assignments: {e}")
+        return 0
