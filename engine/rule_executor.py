@@ -169,32 +169,7 @@ def _compute_row_counts(
         return max(failed, 0), max(passed, 0)
     return None, None
 
-def _fetch_sample_failed_values(
-    rule_code: str,
-    table_name: str,
-    column_name: Optional[str],
-    rule: Optional[DQRule] = None,
-) -> Optional[str]:
-    """
-    Run a TOP-5 query to get sample failing values for display in DQ_RESULT.
-    Non-critical — failure returns None.
-    """
-    sample_sql = build_sample_sql(rule_code, table_name, column_name, rule=rule)
-    if not sample_sql:
-        return None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(sample_sql)
-        rows = cursor.fetchall()
-        conn.close()
-        values = [str(r[0]) for r in rows if r and r[0] is not None]
-        if values:
-            return ", ".join(values[:5])
-        return None
-    except Exception as e:
-        logger.debug(f"Sample failed-value query failed for {rule_code}: {e}")
-        return None
+
 
 def _build_result_message(
     rule: DQRule,
@@ -302,27 +277,36 @@ def _execute_single_assignment(run_id: int, assignment: DQRuleAssignment) -> DQR
                 rows_checked = int(count_row[0]) if count_row and count_row[0] is not None else 0
             except Exception:
                 pass  # Non-critical
+            # ── Evaluate threshold ─────────────────────────────────────────────
+            threshold_value, threshold_operator = _resolve_threshold(assignment, rule)
+            result_status = _evaluate_threshold(observed_value, threshold_value, threshold_operator)
+            # ── Compute row counts ─────────────────────────────────────────────
+            failed_row_count, passed_row_count = _compute_row_counts(
+                rule, assignment, observed_value, rows_checked,
+                threshold_value, threshold_operator,
+            )
+            pass_percentage = (
+                (passed_row_count / rows_checked * 100)
+                if rows_checked and passed_row_count is not None and rows_checked > 0
+                else None
+            )
+            # ── Fetch sample failing values ────────────────────────────────────
+            sample_failed_value = None
+            if result_status == "FAILED" and failed_row_count and failed_row_count > 0:
+                sample_sql = build_sample_sql(
+                    rule.rule_code, table_name, column_name, rule=rule, assignment=assignment
+                )
+                if sample_sql:
+                    try:
+                        cursor.execute(sample_sql)
+                        sample_rows = cursor.fetchall()
+                        values = [str(r[0]) for r in sample_rows if r and r[0] is not None]
+                        if values:
+                            sample_failed_value = ", ".join(values[:5])
+                    except Exception as e:
+                        logger.debug(f"Sample failed-value query failed for {rule.rule_code}: {e}")
         finally:
             conn.close()
-        # ── Evaluate threshold ─────────────────────────────────────────────
-        threshold_value, threshold_operator = _resolve_threshold(assignment, rule)
-        result_status = _evaluate_threshold(observed_value, threshold_value, threshold_operator)
-        # ── Compute row counts ─────────────────────────────────────────────
-        failed_row_count, passed_row_count = _compute_row_counts(
-            rule, assignment, observed_value, rows_checked,
-            threshold_value, threshold_operator,
-        )
-        pass_percentage = (
-            (passed_row_count / rows_checked * 100)
-            if rows_checked and passed_row_count is not None and rows_checked > 0
-            else None
-        )
-        # ── Fetch sample failing values ────────────────────────────────────
-        sample_failed_value = None
-        if result_status == "FAILED" and failed_row_count and failed_row_count > 0:
-            sample_failed_value = _fetch_sample_failed_values(
-                rule.rule_code, table_name, column_name, rule=rule
-            )
         # ── Build result message ───────────────────────────────────────────
         result_message = _build_result_message(
             rule, result_status, observed_value,

@@ -2,7 +2,7 @@
 expression_builder.py — Translates DQ rule definitions into executable T-SQL.
 
 Architecture:
-  The rule_expression column in DQ_RULE now stores the FULL SQL query
+  The rule_expression column in DQ_RULE stores the FULL SQL query
   (e.g. "SELECT COUNT(*) AS observed_value FROM {table} WHERE {col} IS NULL").
   This module resolves placeholders ({col}, {table}, etc.) and converts
   pseudo-SQL functions to T-SQL equivalents.
@@ -10,13 +10,22 @@ Architecture:
   If the resolved expression still has unresolved placeholders, the module
   returns SELECT NULL AS observed_value so the run continues safely.
 
-Placeholder resolution:
-  {col}  / {pk_col} / {biz_key} / {event_ts} / {event_time} / {load_time}
-  {dim_updated_at} / {created_at} / {updated_at}  →  column_name parameter
-  {table} / {same_table}                           →  table_name parameter
-  {dtype}                                          →  column data_type from DATA_ASSET
-  {min_val} / {max_val} / {min} / {max}            →  from assignment overrides
-  {pattern} / {allowed_values}                     →  from assignment business_context
+Placeholder resolution (fully dynamic — NO hardcoded placeholder lists):
+  1. {table} is ALWAYS resolved from the table_name parameter.
+  2. {col}   is ALWAYS resolved from the column_name parameter (if available).
+  3. {dtype} is resolved from the column's data type in DATA_ASSET.
+  4. ALL OTHER {placeholder} tokens are resolved from the assignment's
+     business_context field, which stores key=value pairs separated by ';'.
+     Example business_context:
+       "field_a=start_date;operator=<=;field_b=end_date"
+       "flag1=is_active;flag2=is_deleted;flag3=is_archived"
+       "col1=name;col2=email;col3=phone"
+
+  This means:
+    - No placeholder names are hardcoded in this module.
+    - If someone adds a new rule with new placeholders (e.g. {my_custom_col}),
+      they just need to supply my_custom_col=some_value in business_context
+      when creating the assignment. No code changes required.
 
 Pseudo-SQL → T-SQL conversions:
   CURRENT_DATE() / CURRENT_TIMESTAMP  →  GETDATE()
@@ -35,25 +44,58 @@ logger = logging.getLogger(__name__)
 
 _NULL_SQL = "SELECT NULL AS observed_value"
 
-# ─── Placeholder mapping ─────────────────────────────────────────────────────
-# All of these placeholders map to the column_name parameter.
-_COLUMN_PLACEHOLDERS = {
-    "{col}", "{pk_col}", "{biz_key}", "{event_ts}", "{event_time}",
-    "{load_time}", "{dim_updated_at}", "{created_at}", "{updated_at}",
-    "{fk_col}", "{parent_id}", "{id}", "{condition_col}", "{required_col}",
-    "{computed_col}", "{flag1}", "{flag2}", "{flag3}",
-    "{prev_status}", "{new_status}", "{currency_col}", "{group_col}",
-    "{line_item_col}", "{header_total_col}", "{dim_id}",
-}
-# These map to the table_name parameter
-_TABLE_PLACEHOLDERS = {
-    "{table}", "{same_table}", "{parent_table}", "{dim_table}",
-}
+
+# ─── Placeholder extraction ──────────────────────────────────────────────────
+
+def _extract_placeholders(expression: str) -> set[str]:
+    """
+    Dynamically extract all {placeholder} tokens from an expression.
+    Returns a set of placeholder names (without the braces).
+
+    Example:
+        "SELECT ... FROM {table} WHERE {col} IS NULL"
+        → {'table', 'col'}
+    """
+    return set(re.findall(r"\{([^}]+)\}", expression))
 
 
 def _has_unresolved_placeholders(expression: str) -> bool:
     """Return True if expression still contains {placeholder} tokens."""
     return bool(re.search(r"\{[^}]+\}", expression))
+
+
+def _parse_business_context(business_context: Optional[str]) -> dict[str, str]:
+    """
+    Parse key=value pairs from the assignment's business_context field.
+    Supports ';' and newline as delimiters.
+
+    Example input:
+        "field_a=start_date;operator=<=;field_b=end_date"
+    Returns:
+        {'field_a': 'start_date', 'operator': '<=', 'field_b': 'end_date'}
+
+    This is the primary mechanism for resolving rule-specific placeholders.
+    Any new placeholder in any new rule is automatically resolved if the
+    assignment's business_context contains the matching key=value pair.
+    """
+    result = {}
+    if not business_context:
+        return result
+
+    # Split by ';' or newlines
+    pairs = re.split(r"[;\n]+", business_context.strip())
+    for pair in pairs:
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        # Split on first '=' only (value may contain '=')
+        key, _, value = pair.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            result[key] = value
+
+    return result
 
 
 def _resolve_placeholders(
@@ -64,69 +106,47 @@ def _resolve_placeholders(
     column_data_type: Optional[str] = None,
 ) -> str:
     """
-    Replace known placeholders in a rule_expression template with actual values.
-    Returns the expression with as many placeholders resolved as possible.
+    Replace placeholders in a rule_expression template with actual values.
+
+    Resolution order:
+      1. {table} → table_name parameter (always available)
+      2. {col}   → column_name parameter (if column-level rule)
+      3. {dtype} → column data type from DATA_ASSET
+      4. All other placeholders → parsed from assignment.business_context
+
+    This is fully dynamic: no placeholder names are hardcoded.
+    New rules with new placeholders work automatically as long as the
+    assignment provides the values in business_context.
     """
     if not expression:
         return expression
 
     resolved = expression
 
-    # ── Column placeholders → column_name ──
-    if column_name:
-        for ph in _COLUMN_PLACEHOLDERS:
-            resolved = resolved.replace(ph, column_name)
-
-    # ── Table placeholders → table_name ──
+    # Step 1: Resolve {table} — the target table is always known
     if table_name:
-        for ph in _TABLE_PLACEHOLDERS:
-            resolved = resolved.replace(ph, table_name)
+        resolved = resolved.replace("{table}", table_name)
 
-    # ── Data type placeholder ──
+    # Step 2: Resolve {col} — the target column (column-level rules)
+    if column_name:
+        resolved = resolved.replace("{col}", column_name)
+
+    # Step 3: Resolve {dtype} — column data type from DATA_ASSET
     if column_data_type:
         resolved = resolved.replace("{dtype}", column_data_type)
 
-    # ── Numeric range placeholders from assignment overrides ──
+    # Step 4: Resolve ALL remaining placeholders from business_context
+    #         This is the dynamic part — handles ANY placeholder name.
     if assignment:
-        if assignment.threshold_value_override is not None:
-            tv = str(assignment.threshold_value_override)
-            resolved = resolved.replace("{min_val}", tv)
-            resolved = resolved.replace("{max_val}", tv)
-            resolved = resolved.replace("{min}", tv)
-            resolved = resolved.replace("{max}", tv)
+        bc_params = _parse_business_context(assignment.business_context)
 
-        # Try to extract parameters from business_context JSON-like patterns
-        bc = assignment.business_context or ""
-
-        # Pattern: allowed_values=val1,val2,val3
-        av_match = re.search(r"allowed_values=([^\s;]+)", bc)
-        if av_match:
-            resolved = resolved.replace("{allowed_values}", av_match.group(1))
-
-        # Pattern: pattern=<regex>
-        p_match = re.search(r"pattern=([^\s;]+)", bc)
-        if p_match:
-            resolved = resolved.replace("{pattern}", p_match.group(1))
-
-        # Pattern: expected_case=UPPER|LOWER|TITLE
-        ec_match = re.search(r"expected_case=([^\s;]+)", bc)
-        if ec_match:
-            resolved = resolved.replace("{expected_case}", ec_match.group(1))
-
-        # Pattern: source_expr=<expression>
-        se_match = re.search(r"source_expr=([^\s;]+)", bc)
-        if se_match:
-            resolved = resolved.replace("{source_expr}", se_match.group(1))
-
-        # Pattern: allowed_transitions=<list>
-        at_match = re.search(r"allowed_transitions=([^\s;]+)", bc)
-        if at_match:
-            resolved = resolved.replace("{allowed_transitions}", at_match.group(1))
-
-        # Pattern: value=<value> (for conditional not-null)
-        v_match = re.search(r"(?:^|;)value=([^\s;]+)", bc)
-        if v_match:
-            resolved = resolved.replace("{value}", v_match.group(1))
+        # Find what placeholders are still unresolved
+        remaining = _extract_placeholders(resolved)
+        for placeholder_name in remaining:
+            if placeholder_name in bc_params:
+                resolved = resolved.replace(
+                    "{" + placeholder_name + "}", bc_params[placeholder_name]
+                )
 
     return resolved
 
@@ -198,6 +218,13 @@ def build_sql(
     This function resolves placeholders, converts pseudo-SQL to T-SQL,
     applies optional filter conditions, and returns the final executable SQL.
 
+    Placeholder resolution is fully dynamic:
+      - {table} and {col} are resolved from function parameters.
+      - {dtype} is resolved from DATA_ASSET metadata.
+      - ALL other placeholders are resolved from assignment.business_context.
+      - No placeholder names are hardcoded — new rules with new placeholders
+        work automatically.
+
     Returns:
         Executable T-SQL string.  Never raises — returns _NULL_SQL on error.
     """
@@ -219,7 +246,7 @@ def build_sql(
             except (ImportError, Exception):
                 pass  # Non-critical
 
-        # Step 1: Resolve placeholders
+        # Step 1: Resolve placeholders (fully dynamic)
         resolved = _resolve_placeholders(
             expression, table_name, column_name, assignment, column_data_type
         )
@@ -227,11 +254,14 @@ def build_sql(
         # Step 2: Convert pseudo-SQL functions to T-SQL
         resolved = _pseudo_sql_to_tsql(resolved)
 
-        # Step 3: Reject if unresolved placeholders remain
+        # Step 3: Check for unresolved placeholders
         if _has_unresolved_placeholders(resolved):
+            unresolved = _extract_placeholders(resolved)
             logger.warning(
-                f"{rule_code} expression still has unresolved placeholders after "
-                f"resolution: {resolved[:120]!r} — returning NULL."
+                f"{rule_code} expression has unresolved placeholders: "
+                f"{unresolved}. Provide these as key=value pairs in "
+                f"business_context when assigning this rule. "
+                f"Expression: {resolved[:200]!r} — returning NULL."
             )
             return _NULL_SQL
 
@@ -265,6 +295,7 @@ def build_sample_sql(
     column_name: Optional[str],
     limit: int = 5,
     rule: Optional[DQRule] = None,
+    assignment: Optional[DQRuleAssignment] = None,
 ) -> Optional[str]:
     """
     Build a T-SQL query that returns sample failing values for a rule.
@@ -284,14 +315,22 @@ def build_sample_sql(
     # Try to extract WHERE clause from the rule's full query
     if rule and rule.rule_expression:
         expr = rule.rule_expression
-        # Resolve column placeholders
-        for ph in _COLUMN_PLACEHOLDERS:
-            expr = expr.replace(ph, col)
-        # Resolve table placeholders
-        for ph in _TABLE_PLACEHOLDERS:
-            expr = expr.replace(ph, table_name)
+
+        # Resolve {table} and {col} first
+        expr = expr.replace("{table}", table_name)
+        expr = expr.replace("{col}", col)
+
+        # Resolve remaining placeholders from business_context (dynamic)
+        if assignment:
+            bc_params = _parse_business_context(assignment.business_context)
+            remaining = _extract_placeholders(expr)
+            for ph in remaining:
+                if ph in bc_params:
+                    expr = expr.replace("{" + ph + "}", bc_params[ph])
+
         # Convert pseudo-SQL
         expr = _pseudo_sql_to_tsql(expr)
+
         # Extract WHERE clause
         where_match = re.search(r"\bWHERE\b\s+(.*)", expr, re.IGNORECASE)
         if where_match and not _has_unresolved_placeholders(where_match.group(1)):
